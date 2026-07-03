@@ -1,0 +1,6 @@
+{
+  "mc_path": "C:\\bin\\mc.exe",
+  "default_alias": "gcs",
+  "request_timeout": 30,
+  "upload_timeout": 300
+}
