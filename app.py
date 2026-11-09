@@ -112,14 +112,36 @@ async def run_mc(args: list[str], timeout: int | None = None) -> list[dict]:
     # surface error objects from NDJSON
     errors = [r for r in results if r.get("status") == "error"]
     if errors and proc.returncode != 0:
-        msg = errors[0].get("error", {}).get("message", "Unknown mc error")
-        raise MCError(msg)
+        raise MCError(_error_message(errors[0]))
 
     return results
 
 
+def _error_message(obj: dict) -> str:
+    """Build a readable message from an mc JSON error, including its cause."""
+    err = obj.get("error")
+    if isinstance(err, str):
+        return err
+    if not isinstance(err, dict):
+        return "Unknown mc error"
+    msg = err.get("message") or "Unknown mc error"
+    cause = err.get("cause")
+    cause_msg = cause.get("message") if isinstance(cause, dict) else cause
+    if cause_msg and cause_msg not in msg:
+        msg = f"{msg} {cause_msg}"
+    return msg
+
+
 def mc_error_response(e: MCError):
-    raise HTTPException(status_code=500, detail=str(e))
+    msg = str(e)
+    lower = msg.lower()
+    if "access denied" in lower:
+        status = 403
+    elif "does not exist" in lower or "not found" in lower:
+        status = 404
+    else:
+        status = 500
+    raise HTTPException(status_code=status, detail=msg)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +149,15 @@ def mc_error_response(e: MCError):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="MinIO Manager")
+
+
+@app.middleware("http")
+async def no_cache_frontend(request, call_next):
+    # Make the browser revalidate the UI on every load so edits show up immediately
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +240,50 @@ async def create_bucket(data: dict):
         mc_error_response(e)
 
 
+@app.post("/api/buckets/rename")
+async def rename_bucket(data: dict):
+    """S3 has no rename: create the new bucket, mirror objects, copy the
+    anonymous policy, and optionally remove the old bucket."""
+    alias = data.get("alias", "").strip()
+    old = data.get("name", "").strip().strip("/")
+    new = data.get("newName", "").strip().strip("/")
+    delete_old = bool(data.get("deleteOld", False))
+    if not alias or not old or not new:
+        raise HTTPException(status_code=400, detail="alias, name and newName required")
+    if old == new:
+        raise HTTPException(status_code=400, detail="New name is the same as the old one")
+
+    src, dst = mc_path(alias, old), mc_path(alias, new)
+    timeout = _config.get("upload_timeout", 300)
+    try:
+        await run_mc(["mb", dst])
+        await run_mc(["mirror", src, dst], timeout=timeout)
+
+        policy_copied = False
+        try:
+            res = await run_mc(["anonymous", "get-json", src])
+            policy = res[0].get("anonymous") if res else None
+            if policy and policy.get("Statement"):
+                text = json.dumps(policy).replace(
+                    f"arn:aws:s3:::{old}/", f"arn:aws:s3:::{new}/"
+                ).replace(f'"arn:aws:s3:::{old}"', f'"arn:aws:s3:::{new}"')
+                tmp = Path(tempfile.gettempdir()) / f"minio_policy_{uuid.uuid4().hex}.json"
+                try:
+                    tmp.write_text(text, encoding="utf-8")
+                    await run_mc(["anonymous", "set-json", str(tmp), dst])
+                finally:
+                    tmp.unlink(missing_ok=True)
+                policy_copied = True
+        except MCError:
+            pass  # bucket had no policy or we can't read it; data copy still succeeded
+
+        if delete_old:
+            await run_mc(["rb", "--force", src], timeout=timeout)
+        return {"status": "ok", "policyCopied": policy_copied, "oldDeleted": delete_old}
+    except MCError as e:
+        mc_error_response(e)
+
+
 @app.delete("/api/buckets/{name}")
 async def delete_bucket(name: str, alias: str, force: bool = False):
     args = ["rb"]
@@ -267,30 +342,30 @@ async def delete_object(data: dict):
         mc_error_response(e)
 
 
-@app.post("/api/copy")
-async def copy_object(data: dict):
+async def _copy_or_move(cmd: str, data: dict):
     src = data.get("src", "")
     dst = data.get("dst", "")
     if not src or not dst:
         raise HTTPException(status_code=400, detail="src and dst required")
+    args = [cmd]
+    if src.endswith("/"):  # folders need --recursive
+        args.append("--recursive")
+    args += [src, dst]
     try:
-        await run_mc(["cp", src, dst])
+        await run_mc(args, timeout=_config.get("upload_timeout", 300))
         return {"status": "ok"}
     except MCError as e:
         mc_error_response(e)
+
+
+@app.post("/api/copy")
+async def copy_object(data: dict):
+    return await _copy_or_move("cp", data)
 
 
 @app.post("/api/move")
 async def move_object(data: dict):
-    src = data.get("src", "")
-    dst = data.get("dst", "")
-    if not src or not dst:
-        raise HTTPException(status_code=400, detail="src and dst required")
-    try:
-        await run_mc(["mv", src, dst])
-        return {"status": "ok"}
-    except MCError as e:
-        mc_error_response(e)
+    return await _copy_or_move("mv", data)
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +433,12 @@ async def preview(alias: str, bucket: str, key: str, background_tasks: Backgroun
                  ".toml", ".xml", ".html", ".htm", ".js", ".ts", ".py",
                  ".go", ".rs", ".sh", ".bat", ".css", ".ini", ".cfg", ".env"}
     if ext in TEXT_EXTS:
-        content = tmp_path.read_bytes()
+        max_bytes = 2 * 1024 * 1024
+        with open(tmp_path, "rb") as fh:
+            content = fh.read(max_bytes + 1)
         tmp_path.unlink(missing_ok=True)
+        if len(content) > max_bytes:
+            content = content[:max_bytes] + b"\n\n... [truncated: file larger than 2 MB, download to see all]"
         mime = mimetypes.guess_type(filename)[0] or "text/plain"
         return Response(content=content, media_type=mime)
 
@@ -392,13 +471,28 @@ async def preview(alias: str, bucket: str, key: str, background_tasks: Backgroun
 # Policy endpoints
 # ---------------------------------------------------------------------------
 
+POLICY_LEVELS = ("none", "download", "upload", "public")
+
+
 @app.get("/api/policy")
-async def get_policy(alias: str, bucket: str):
-    path = mc_path(alias, bucket)
+async def get_policy(alias: str, bucket: str, prefix: str = "", detail: bool = False):
+    """Return the anonymous access level for a bucket (or folder prefix).
+
+    With detail=true, also return the full bucket policy JSON and the list of
+    per-prefix rules so the UI can show exactly what is in effect."""
+    path = mc_path(alias, bucket, prefix)
     try:
-        # Try getting the anonymous policy level
         results = await run_mc(["anonymous", "get", path])
-        return results[0] if results else {}
+        info = results[0] if results else {}
+        out = {"permission": info.get("permission", "none")}
+        if detail:
+            out["policy"] = info.get("anonymous") or None
+            try:
+                rules = await run_mc(["anonymous", "list", mc_path(alias, bucket)])
+                out["rules"] = [r for r in rules if "resource" in r]
+            except MCError:
+                out["rules"] = []
+        return out
     except MCError as e:
         mc_error_response(e)
 
@@ -407,15 +501,27 @@ async def get_policy(alias: str, bucket: str):
 async def set_policy(data: dict):
     alias = data.get("alias", "")
     bucket = data.get("bucket", "")
+    prefix = data.get("prefix", "")     # optional folder prefix, e.g. "uploads/"
     level = data.get("level", "")       # none | download | upload | public
     custom_json = data.get("customJson", "")
 
     if not alias or not bucket:
         raise HTTPException(status_code=400, detail="alias and bucket required")
+    if prefix and custom_json:
+        raise HTTPException(
+            status_code=400,
+            detail="Custom JSON replaces the whole bucket policy; set it at bucket level, not on a folder",
+        )
 
-    path = mc_path(alias, bucket)
+    path = mc_path(alias, bucket, prefix)
     try:
         if custom_json:
+            try:
+                parsed = json.loads(custom_json)
+            except json.JSONDecodeError as je:
+                raise HTTPException(status_code=400, detail=f"Invalid JSON: {je}")
+            if not isinstance(parsed, dict) or "Statement" not in parsed:
+                raise HTTPException(status_code=400, detail="Policy JSON must contain a Statement list")
             tmp_path = Path(tempfile.gettempdir()) / f"minio_policy_{uuid.uuid4().hex}.json"
             try:
                 tmp_path.write_text(custom_json, encoding="utf-8")
@@ -423,20 +529,10 @@ async def set_policy(data: dict):
             finally:
                 tmp_path.unlink(missing_ok=True)
         else:
-            if level not in ("none", "download", "upload", "public"):
+            if level not in POLICY_LEVELS:
                 raise HTTPException(status_code=400, detail="Invalid policy level")
             await run_mc(["anonymous", "set", level, path])
         return {"status": "ok"}
-    except MCError as e:
-        mc_error_response(e)
-
-
-@app.get("/api/policy/json")
-async def get_policy_json(alias: str, bucket: str):
-    path = mc_path(alias, bucket)
-    try:
-        results = await run_mc(["anonymous", "get-json", path])
-        return results[0] if results else {}
     except MCError as e:
         mc_error_response(e)
 
@@ -448,9 +544,19 @@ async def get_policy_json(alias: str, bucket: str):
 @app.get("/api/search")
 async def search(alias: str, bucket: str, pattern: str, prefix: str = ""):
     path = mc_path(alias, bucket, prefix)
+    # mc find returns keys as "alias/bucket/path"; strip to a bucket-relative key
+    strip = mc_path(alias, bucket) + "/"
     try:
         results = await run_mc(["find", path, "--name", pattern])
-        return results
+        out = []
+        for r in results:
+            key = r.get("key", "")
+            if r.get("status") != "success" or not key:
+                continue
+            if key.startswith(strip):
+                key = key[len(strip):]
+            out.append({**r, "key": key})
+        return out
     except MCError as e:
         mc_error_response(e)
 

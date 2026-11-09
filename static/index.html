@@ -316,6 +316,14 @@
     .tag-private { background: #2a2a1a; color: #c8a020; border: 1px solid #c8a020; }
     .tag-download { background: #1a2a3a; color: var(--accent); border: 1px solid var(--accent); }
     .tag-upload { background: #2a1a3a; color: #b07af0; border: 1px solid #b07af0; }
+    .tag-custom { background: #3a2a1a; color: #f0a050; border: 1px solid #f0a050; }
+    .tag-unknown { background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); }
+    .bucket-item .tag { cursor: pointer; font-size: 10px; padding: 1px 6px; }
+    .policy-help { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+    .policy-rules { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+    .policy-rules .rule { display: flex; justify-content: space-between; gap: 8px; padding: 5px 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); }
+    .policy-rules code { font-family: monospace; color: var(--text); }
+    .policy-json { font-family: monospace; font-size: 11px; white-space: pre; overflow: auto; max-height: 220px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px; margin: 0; }
     .upload-progress { font-size: 12px; color: var(--text-muted); }
     .progress-bar-wrap { height: 4px; background: var(--border); border-radius: 2px; margin-top: 4px; }
     .progress-bar { height: 100%; background: var(--accent); border-radius: 2px; transition: width .2s; }
@@ -415,13 +423,12 @@
           <div class="bucket-item" :class="{active: currentBucket === b.key}" @click="selectBucket(b.key)">
             <span>🪣</span>
             <span class="name" x-text="b.key.replace('/', '')"></span>
-            <span
-              @click.stop="quickTogglePolicy(b.key.replace('/', ''))"
-              :title="(bucketPolicies[b.key.replace('/','')]||'none')==='none' ? 'Private — click to make public' : 'Public — click to make private'"
-              style="font-size:15px; cursor:pointer; line-height:1; padding:2px 3px; border-radius:3px; transition:opacity .15s;"
-              x-text="(bucketPolicies[b.key.replace('/','')]||'none')==='none' ? '🔒' : '🔓'"
-              :style="togglingPolicy===b.key.replace('/','') ? 'opacity:.4;pointer-events:none;' : ''">
-            </span>
+            <span class="tag"
+              :class="policyTagClass(bucketPolicies[b.key.replace('/','')])"
+              @click.stop="openBucketPolicy(b.key.replace('/', ''))"
+              :title="policyDescription(bucketPolicies[b.key.replace('/','')]) + ' — click to manage'"
+              x-text="bucketPolicies[b.key.replace('/','')] || '…'"></span>
+            <span class="del-btn" @click.stop="openRename(b.key.replace('/', ''))" title="Rename bucket">✎</span>
             <span class="del-btn" @click.stop="deleteBucket(b.key.replace('/', ''))" title="Delete bucket">×</span>
           </div>
         </template>
@@ -451,6 +458,15 @@
         </template>
         <template x-if="currentBucket">
           <input class="search-input" type="text" placeholder="🔍 Search (*.png, etc.)" x-model="searchPattern" @keyup.enter="doSearch()">
+        </template>
+        <template x-if="currentBucket && searchActive">
+          <button class="btn btn-sm" @click="clearSearch()" title="Clear search results">✕ Clear search</button>
+        </template>
+        <template x-if="currentBucket">
+          <button class="btn btn-sm" @click="openBucketPolicy(currentBucket.replace(/\/$/, ''))" title="View and change who can access this bucket">
+            🔐 Policy
+            <span class="tag" :class="policyTagClass(bucketPolicies[currentBucket.replace(/\/$/, '')])" x-text="bucketPolicies[currentBucket.replace(/\/$/, '')] || '…'"></span>
+          </button>
         </template>
         <template x-if="currentBucket">
           <label class="btn btn-primary btn-sm" style="cursor:pointer;" title="Upload files">
@@ -523,7 +539,7 @@
                     <td>
                       <div class="cell-name">
                         <span class="icon" x-text="obj.type === 'folder' ? '📁' : fileIcon(obj.key)"></span>
-                        <span class="fname" x-text="displayName(obj.key)"></span>
+                        <span class="fname" x-text="searchActive ? obj.key : displayName(obj.key)"></span>
                       </div>
                     </td>
                     <td class="cell-size" x-text="obj.type === 'folder' ? '' : formatSize(obj.size)"></td>
@@ -592,19 +608,19 @@
                 <template x-if="selectedObject.type !== 'folder'">
                   <button class="btn btn-sm" @click="downloadFile(selectedObject.key)">↓ Download</button>
                 </template>
-                <button class="btn btn-sm" @click="copyMoveModal = {mode:'copy', key: selectedObject.key}">Copy</button>
-                <button class="btn btn-sm" @click="copyMoveModal = {mode:'move', key: selectedObject.key}">Move</button>
+                <button class="btn btn-sm" @click="openCopyMove('copy', selectedObject.key)">Copy</button>
+                <button class="btn btn-sm" @click="openCopyMove('move', selectedObject.key)">Move</button>
                 <button class="btn btn-sm btn-danger" @click="deleteObject(selectedObject)">Delete</button>
               </div>
 
-              <template x-if="currentBucket">
+              <template x-if="currentBucket && selectedObject.type === 'folder'">
                 <div style="border-top: 1px solid var(--border); padding-top: 12px;">
                   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-                    <span class="label" style="margin:0;" x-text="selectedObject.type === 'folder' ? 'Folder Policy' : 'Bucket Policy'"></span>
-                    <button class="btn btn-sm" @click="loadPolicy(selectedObject)">Manage</button>
+                    <span class="label" style="margin:0;">Folder Policy</span>
+                    <button class="btn btn-sm" @click="openFolderPolicy(selectedObject.key)">Manage</button>
                   </div>
                   <template x-if="policyInfo !== null">
-                    <span class="tag" :class="policyTagClass(policyInfo)" x-text="policyInfo || 'none'"></span>
+                    <span class="tag" :class="policyTagClass(policyInfo)" x-text="policyInfo"></span>
                   </template>
                 </div>
               </template>
@@ -668,35 +684,82 @@
 
   <!-- Policy Modal -->
   <div class="modal-backdrop" x-show="showPolicyModal" @click.self="showPolicyModal = false">
-    <div class="modal" @keyup.escape.window="showPolicyModal = false">
+    <div class="modal" style="width:560px; max-height:88vh; overflow-y:auto;" @keyup.escape.window="showPolicyModal = false">
       <h2 x-text="policyTarget && policyTarget.isFolder ? 'Folder Policy' : 'Bucket Policy'"></h2>
       <div style="font-size:12px; color:var(--text-muted); margin-top:-8px;" x-text="policyTarget ? policyTarget.path : ''"></div>
-      <template x-if="policyTarget && !policyTarget.isFolder">
+
+      <template x-if="policyLoading">
+        <div style="padding:20px; text-align:center;"><span class="spinner"></span></div>
+      </template>
+
+      <template x-if="!policyLoading && policyTarget">
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <!-- Current state -->
+          <div class="form-row">
+            <label>Current anonymous access</label>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="tag" :class="policyTagClass(policyCurrent)" x-text="policyCurrent"></span>
+              <span class="policy-help" x-text="policyDescription(policyCurrent)"></span>
+            </div>
+          </div>
+
+          <template x-if="policyRules.length">
+            <div class="form-row">
+              <label>Rules in effect</label>
+              <div class="policy-rules">
+                <template x-for="r in policyRules" :key="r.resource">
+                  <div class="rule"><code x-text="r.resource"></code><span x-text="r.allow"></span></div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="policyCurrentJson">
+            <details>
+              <summary style="cursor:pointer; font-size:12px; color:var(--text-muted);">Show full policy JSON</summary>
+              <pre class="policy-json" x-text="policyCurrentJson"></pre>
+            </details>
+          </template>
+
+          <div class="policy-help" style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px;">
+            This only controls <b>anonymous</b> (not logged in) access, e.g. people opening image URLs on your website.
+            Apps that upload using an access key (like Django) are governed by that key's IAM policy, not this.
+          </div>
+        </div>
+      </template>
+
+      <template x-if="!policyLoading && policyTarget && !policyTarget.isFolder">
         <div class="form-row">
-          <label>Preset</label>
+          <label>Change to</label>
           <select x-model="policyPreset" @change="applyPolicyPreset()">
-            <option value="simple">Simple level (public / private)</option>
+            <option value="simple">Simple level</option>
             <option value="hotlink">Hotlink protection (domain-only access)</option>
             <option value="custom">Custom JSON</option>
           </select>
         </div>
       </template>
 
-      <!-- Simple level selector -->
-      <template x-if="policyTarget && !policyTarget.isFolder && policyPreset === 'simple'">
+      <!-- Simple level selector (bucket or folder) -->
+      <template x-if="!policyLoading && policyTarget && policyPreset === 'simple'">
         <div class="form-row">
-          <label>Access Level</label>
+          <label x-text="policyTarget.isFolder ? 'Access level for this folder' : 'Access level'"></label>
           <select x-model="policyLevel">
             <option value="none">none (private)</option>
-            <option value="download">download (public read)</option>
-            <option value="upload">upload (anonymous write)</option>
-            <option value="public">public (full access)</option>
+            <option value="download">download (public read; recommended for website media)</option>
+            <option value="upload">upload (anyone can write; rarely wanted)</option>
+            <option value="public">public (anyone can read, write and delete)</option>
           </select>
+          <div class="policy-help" style="margin-top:4px;" x-show="policyTarget.isFolder">
+            Adds a rule for <code x-text="policyTarget.folderPrefix"></code> only. Other bucket rules are kept.
+          </div>
+          <div class="policy-help" style="margin-top:4px; color:var(--danger);" x-show="policyLevel === 'public' || policyLevel === 'upload'">
+            ⚠ Anyone on the internet will be able to upload<span x-show="policyLevel === 'public'"> and delete</span> files.
+          </div>
         </div>
       </template>
 
       <!-- Hotlink protection -->
-      <template x-if="policyTarget && !policyTarget.isFolder && policyPreset === 'hotlink'">
+      <template x-if="!policyLoading && policyTarget && !policyTarget.isFolder && policyPreset === 'hotlink'">
         <div style="display:flex; flex-direction:column; gap:10px;">
           <div style="font-size:12px; color:#f5c842; background:#2a2510; padding:8px 10px; border-radius:var(--radius); border:1px solid #5a4a10;">
             ⚠ The <code>Referer</code> header can be spoofed or stripped — this prevents casual direct access and hotlinking, not determined attackers.
@@ -708,20 +771,42 @@
         </div>
       </template>
 
-      <!-- Folder note -->
-      <template x-if="policyTarget && policyTarget.isFolder">
-        <div style="font-size:12px; color:var(--text-muted); background:var(--surface2); padding:8px 10px; border-radius:var(--radius); border:1px solid var(--border);">
-          Folder-level policies require custom JSON. A template is pre-filled below — edit the <code style="color:var(--accent);">Action</code> list as needed.
+      <template x-if="!policyLoading && policyTarget && !policyTarget.isFolder && policyPreset !== 'simple'">
+        <div class="form-row">
+          <label x-text="policyPreset === 'hotlink' ? 'Generated policy (replaces the whole bucket policy)' : 'Policy JSON (replaces the whole bucket policy)'"></label>
+          <textarea x-model="policyCustomJson" placeholder='{"Version":"2012-10-17","Statement":[...]}' style="min-height:160px; font-family:monospace; font-size:12px;" :readonly="policyPreset === 'hotlink'"></textarea>
         </div>
       </template>
-
-      <div class="form-row">
-        <label x-text="policyPreset === 'simple' && !policyTarget.isFolder ? 'Custom JSON (optional override)' : 'JSON Policy'"></label>
-        <textarea x-model="policyCustomJson" :placeholder="policyTarget && policyTarget.isFolder ? '' : '{&quot;Version&quot;:&quot;2012-10-17&quot;,&quot;Statement&quot;:[...]}'" style="min-height:120px;" :readonly="policyPreset === 'hotlink'"></textarea>
-      </div>
       <div class="modal-footer">
         <button class="btn" @click="showPolicyModal = false">Cancel</button>
-        <button class="btn btn-primary" @click="savePolicy()">Save Policy</button>
+        <button class="btn btn-primary" @click="savePolicy()" :disabled="policyLoading || savingPolicy || (policyPreset !== 'simple' && !policyCustomJson.trim())" x-text="savingPolicy ? 'Saving…' : 'Save Policy'"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rename Bucket Modal -->
+  <div class="modal-backdrop" x-show="renameModal" @click.self="!renaming && (renameModal = null)">
+    <div class="modal" @keyup.escape.window="!renaming && (renameModal = null)">
+      <h2>Rename Bucket</h2>
+      <div class="policy-help" style="margin-top:-6px;">
+        S3 can't rename buckets in place. This creates the new bucket, copies every object, and copies the anonymous policy.
+        Update your apps (e.g. <code>S3_BUCKET_NAME</code>) to use the new name.
+      </div>
+      <div class="form-row">
+        <label>Current name</label>
+        <input type="text" :value="renameModal ? renameModal.name : ''" readonly style="opacity:.7;">
+      </div>
+      <div class="form-row">
+        <label>New name</label>
+        <input type="text" x-model="renameNewName" @keyup.enter="doRename()" placeholder="new-bucket-name">
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" x-model="renameDeleteOld">
+        Delete the old bucket after copying
+      </label>
+      <div class="modal-footer">
+        <button class="btn" @click="renameModal = null" :disabled="renaming">Cancel</button>
+        <button class="btn btn-primary" @click="doRename()" :disabled="renaming || !renameNewName.trim()" x-text="renaming ? 'Copying…' : 'Rename'"></button>
       </div>
     </div>
   </div>
@@ -840,6 +925,8 @@
   </div>
 
   <script>
+  const POLICY_LEVELS = ['none', 'download', 'upload', 'public'];
+
   function app() {
     return {
       // --- State ---
@@ -886,9 +973,18 @@
       policyCustomJson: '',
       policyTarget: null,
       policyPreset: 'simple',
+      policyLoading: false,
+      savingPolicy: false,
+      policyCurrent: 'none',
+      policyCurrentJson: '',
+      policyRules: [],
       hotlinkDomains: '',
       bucketPolicies: {},
-      togglingPolicy: null,
+      searchActive: false,
+      renameModal: null,
+      renameNewName: '',
+      renameDeleteOld: false,
+      renaming: false,
       showSettings: false,
       settingsMcPath: 'mc',
       newAlias: { name: '', url: '', accessKey: '', secretKey: '' },
@@ -920,6 +1016,10 @@
         try {
           const data = await this.apiGet('/api/aliases');
           this.aliases = Array.isArray(data) ? data.filter(a => a.alias) : [];
+          // Drop a saved default alias that no longer exists in mc
+          if (this.currentAlias && !this.aliases.some(a => a.alias === this.currentAlias)) {
+            this.currentAlias = '';
+          }
           if (!this.currentAlias && this.aliases.length) {
             this.currentAlias = this.aliases[0].alias;
             await this.loadBuckets();
@@ -948,8 +1048,10 @@
 
       async onAliasChange() {
         this.currentBucket = '';
+        this.currentPrefix = '';
         this.objects = [];
         this.selectedObject = null;
+        this.searchActive = false;
         await this.loadBuckets();
       },
 
@@ -959,27 +1061,56 @@
         this.loadingBuckets = true;
         try {
           this.buckets = await this.apiGet(`/api/buckets?alias=${encodeURIComponent(this.currentAlias)}`);
-          // Fetch policy for each bucket in background
-          this.bucketPolicies = {};
-          for (const b of this.buckets) {
-            const bucket = (b.key || '').replace(/\/$/, '');
-            if (!bucket) continue;
-            try {
-              const p = new URLSearchParams({ alias: this.currentAlias, bucket });
-              const data = await this.apiGet(`/api/policy?${p}`);
-              this.bucketPolicies[bucket] = data.anonymousPermission || data.permission || 'none';
-            } catch { this.bucketPolicies[bucket] = '?'; }
-          }
         } catch (e) { this.error = e.message; }
         this.loadingBuckets = false;
+        // Fetch every bucket's policy in parallel, without blocking the list
+        this.bucketPolicies = {};
+        await Promise.all(this.buckets.map(b => this.refreshBucketPolicy((b.key || '').replace(/\/$/, ''))));
+      },
+
+      async refreshBucketPolicy(bucket) {
+        if (!bucket) return;
+        try {
+          const p = new URLSearchParams({ alias: this.currentAlias, bucket });
+          const data = await this.apiGet(`/api/policy?${p}`);
+          this.bucketPolicies = { ...this.bucketPolicies, [bucket]: data.permission || 'none' };
+        } catch {
+          this.bucketPolicies = { ...this.bucketPolicies, [bucket]: '?' };
+        }
       },
 
       async selectBucket(key) {
         this.currentBucket = key;
         this.currentPrefix = '';
         this.selectedObject = null;
+        this.searchActive = false;
+        this.searchPattern = '';
         this.checkedKeys = new Set();
         await this.loadObjects();
+      },
+
+      openRename(name) {
+        this.renameModal = { name };
+        this.renameNewName = name;
+        this.renameDeleteOld = false;
+      },
+
+      async doRename() {
+        if (!this.renameModal || !this.renameNewName.trim()) return;
+        const oldName = this.renameModal.name;
+        const newName = this.renameNewName.trim();
+        if (this.renameDeleteOld && !confirm(`Copy "${oldName}" to "${newName}" and then DELETE "${oldName}"?`)) return;
+        this.renaming = true;
+        try {
+          const res = await this.apiPost('/api/buckets/rename', {
+            alias: this.currentAlias, name: oldName, newName, deleteOld: this.renameDeleteOld,
+          });
+          this.renameModal = null;
+          await this.loadBuckets();
+          await this.selectBucket(newName + '/');
+          if (!res.policyCopied) this.error = `Renamed. Note: no anonymous policy was copied to "${newName}" (old bucket had none, or it couldn't be read).`;
+        } catch (e) { this.error = e.message; }
+        this.renaming = false;
       },
 
       async createBucket() {
@@ -994,9 +1125,16 @@
 
       async deleteBucket(name) {
         if (!confirm(`Delete bucket "${name}"? This cannot be undone.`)) return;
+        const url = (force) => `/api/buckets/${encodeURIComponent(name)}?alias=${encodeURIComponent(this.currentAlias)}${force ? '&force=true' : ''}`;
         try {
-          await this.apiDelete(`/api/buckets/${encodeURIComponent(name)}?alias=${encodeURIComponent(this.currentAlias)}`);
-          if (this.currentBucket === name + '/') { this.currentBucket = ''; this.objects = []; }
+          try {
+            await this.apiDelete(url(false));
+          } catch (e) {
+            if (!/not empty/i.test(e.message)) throw e;
+            if (!confirm(`Bucket "${name}" is not empty. Delete it AND all of its objects?`)) return;
+            await this.apiDelete(url(true));
+          }
+          if (this.currentBucket === name + '/') { this.currentBucket = ''; this.objects = []; this.selectedObject = null; }
           await this.loadBuckets();
         } catch (e) { this.error = e.message; }
       },
@@ -1023,6 +1161,7 @@
 
       async browse(prefix) {
         this.currentPrefix = prefix;
+        this.searchActive = false;
         this.selectedObject = null;
         this.statInfo = null;
         this.checkedKeys = new Set();
@@ -1063,11 +1202,18 @@
         this.selectedObject = obj;
         this.statInfo = null;
         this.policyInfo = null;
+        const bucket = this.currentBucket.replace(/\/$/, '');
         if (obj.type !== 'folder') {
           try {
-            const bucket = this.currentBucket.replace(/\/$/, '');
             const params = new URLSearchParams({ alias: this.currentAlias, bucket, key: obj.key });
             this.statInfo = await this.apiGet(`/api/stat?${params}`);
+          } catch {}
+        } else {
+          // Show the folder's effective anonymous access straight away
+          try {
+            const params = new URLSearchParams({ alias: this.currentAlias, bucket, prefix: obj.key });
+            const data = await this.apiGet(`/api/policy?${params}`);
+            if (this.selectedObject && this.selectedObject.key === obj.key) this.policyInfo = data.permission || 'none';
           } catch {}
         }
       },
@@ -1166,6 +1312,11 @@
         return `${this.currentAlias}/${bucket}/${key}`;
       },
 
+      openCopyMove(mode, key) {
+        this.copyMoveModal = { mode, key };
+        this.copyMoveDest = this.buildFullPath(key);
+      },
+
       async doCopyMove() {
         if (!this.copyMoveDest.trim() || !this.copyMoveModal) return;
         const src = this.buildFullPath(this.copyMoveModal.key);
@@ -1179,52 +1330,51 @@
       },
 
       // --- Policy ---
-      async loadPolicy(obj) {
-        const bucket = this.currentBucket.replace(/\/$/, '');
-        const isFolder = obj && obj.type === 'folder';
-        const folderPrefix = isFolder ? obj.key : '';
-        this.policyTarget = {
-          isFolder,
-          path: isFolder ? `${this.currentAlias}/${bucket}/${folderPrefix}` : `${this.currentAlias}/${bucket}`,
-          folderPrefix,
-        };
-        try {
-          if (isFolder) {
-            const resource = `arn:aws:s3:::${bucket}/${folderPrefix}*`;
-            this.policyCustomJson = JSON.stringify({
-              Version: '2012-10-17',
-              Statement: [{
-                Effect: 'Allow',
-                Principal: { AWS: ['*'] },
-                Action: ['s3:GetObject'],
-                Resource: [resource],
-              }],
-            }, null, 2);
-            this.policyLevel = 'none';
-            this.policyInfo = null;
-          } else {
-            const params = new URLSearchParams({ alias: this.currentAlias, bucket });
-            const data = await this.apiGet(`/api/policy?${params}`);
-            // mc anonymous get returns {"status":"success","anonymousPermission":"download"} or similar
-            this.policyLevel = data.anonymousPermission || data.permission || 'none';
-            this.policyInfo = this.policyLevel;
-            this.policyCustomJson = '';
-            this.policyPreset = 'simple';
-            this.hotlinkDomains = '';
-          }
-          this.showPolicyModal = true;
-        } catch (e) { this.error = e.message; }
+      // Works for any bucket (sidebar/toolbar) — no object selection needed.
+      openBucketPolicy(bucket) {
+        return this.openPolicy(bucket, '');
       },
 
-      async quickTogglePolicy(bucket) {
-        const current = this.bucketPolicies[bucket] || 'none';
-        const next = current === 'none' ? 'download' : 'none';
-        this.togglingPolicy = bucket;
+      openFolderPolicy(folderPrefix) {
+        return this.openPolicy(this.currentBucket.replace(/\/$/, ''), folderPrefix);
+      },
+
+      async openPolicy(bucket, folderPrefix) {
+        const isFolder = !!folderPrefix;
+        this.policyTarget = {
+          bucket,
+          isFolder,
+          folderPrefix,
+          path: `${this.currentAlias}/${bucket}${isFolder ? '/' + folderPrefix : ''}`,
+        };
+        this.policyPreset = 'simple';
+        this.policyCustomJson = '';
+        this.hotlinkDomains = '';
+        this.policyRules = [];
+        this.policyCurrentJson = '';
+        this.policyCurrent = '…';
+        this.policyLoading = true;
+        this.showPolicyModal = true;
         try {
-          await this.apiPost('/api/policy', { alias: this.currentAlias, bucket, level: next, customJson: '' });
-          this.bucketPolicies = { ...this.bucketPolicies, [bucket]: next };
-        } catch (e) { this.error = e.message; }
-        this.togglingPolicy = null;
+          const params = new URLSearchParams({ alias: this.currentAlias, bucket, prefix: folderPrefix, detail: 'true' });
+          const data = await this.apiGet(`/api/policy?${params}`);
+          this.policyCurrent = data.permission || 'none';
+          this.policyRules = data.rules || [];
+          const hasStatements = data.policy && Array.isArray(data.policy.Statement) && data.policy.Statement.length;
+          this.policyCurrentJson = hasStatements ? JSON.stringify(data.policy, null, 2) : '';
+          if (this.policyCurrent === 'custom' && !isFolder) {
+            // Open in custom mode with the existing JSON so it can be edited, not lost
+            this.policyPreset = 'custom';
+            this.policyCustomJson = this.policyCurrentJson;
+            this.policyLevel = 'none';
+          } else {
+            this.policyLevel = POLICY_LEVELS.includes(this.policyCurrent) ? this.policyCurrent : 'none';
+          }
+        } catch (e) {
+          this.error = e.message;
+          this.showPolicyModal = false;
+        }
+        this.policyLoading = false;
       },
 
       applyPolicyPreset() {
@@ -1233,13 +1383,22 @@
           this.hotlinkDomains = '';
         } else if (this.policyPreset === 'hotlink') {
           this.buildHotlinkPolicy();
-        } else {
-          // custom — leave textarea as-is
+        } else if (!this.policyCustomJson) {
+          // custom — start from the current policy (or a template)
+          this.policyCustomJson = this.policyCurrentJson || JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [{
+              Effect: 'Allow',
+              Principal: { AWS: ['*'] },
+              Action: ['s3:GetObject'],
+              Resource: [`arn:aws:s3:::${this.policyTarget.bucket}/*`],
+            }],
+          }, null, 2);
         }
       },
 
       buildHotlinkPolicy() {
-        const bucket = this.currentBucket.replace(/\/$/, '');
+        const bucket = this.policyTarget ? this.policyTarget.bucket : this.currentBucket.replace(/\/$/, '');
         const domains = this.hotlinkDomains
           .split('\n')
           .map(d => d.trim())
@@ -1262,34 +1421,56 @@
       },
 
       async savePolicy() {
-        const bucket = this.currentBucket.replace(/\/$/, '');
+        const t = this.policyTarget;
+        if (!t) return;
+        const useJson = !t.isFolder && this.policyPreset !== 'simple';
+        if (useJson) {
+          try { JSON.parse(this.policyCustomJson); }
+          catch (e) { this.error = 'Invalid JSON: ' + e.message; return; }
+          if (!confirm(`This replaces the entire anonymous policy of "${t.bucket}". Continue?`)) return;
+        } else if ((this.policyLevel === 'public' || this.policyLevel === 'upload') &&
+                   !confirm(`Allow ANYONE on the internet to write to ${t.path}?`)) {
+          return;
+        }
+        this.savingPolicy = true;
         try {
           await this.apiPost('/api/policy', {
             alias: this.currentAlias,
-            bucket,
+            bucket: t.bucket,
+            prefix: t.isFolder ? t.folderPrefix : '',
             level: this.policyLevel,
-            customJson: this.policyCustomJson,
+            customJson: useJson ? this.policyCustomJson : '',
           });
-          this.policyInfo = this.policyCustomJson ? 'custom' : this.policyLevel;
           this.showPolicyModal = false;
-          // Refresh sidebar badge
-          if (!this.policyTarget || !this.policyTarget.isFolder) {
-            try {
-              const p = new URLSearchParams({ alias: this.currentAlias, bucket });
-              const data = await this.apiGet(`/api/policy?${p}`);
-              this.bucketPolicies[bucket] = data.anonymousPermission || data.permission || 'none';
-            } catch {}
+          await this.refreshBucketPolicy(t.bucket);
+          if (t.isFolder && this.selectedObject && this.selectedObject.key === t.folderPrefix) {
+            const p = new URLSearchParams({ alias: this.currentAlias, bucket: t.bucket, prefix: t.folderPrefix });
+            try { this.policyInfo = (await this.apiGet(`/api/policy?${p}`)).permission || 'none'; } catch {}
           }
         } catch (e) { this.error = e.message; }
+        this.savingPolicy = false;
       },
 
       policyTagClass(level) {
         return {
           'tag-public': level === 'public',
-          'tag-private': level === 'none' || !level,
+          'tag-private': level === 'none',
           'tag-download': level === 'download',
           'tag-upload': level === 'upload',
+          'tag-custom': level === 'custom',
+          'tag-unknown': !level || level === '?' || level === '…',
         };
+      },
+
+      policyDescription(level) {
+        return {
+          none: 'Private. Only signed requests with an access key can read or write.',
+          download: 'Anyone can view/download files. Writing requires an access key.',
+          upload: 'Anyone can upload files, but not list or download them.',
+          public: 'Anyone can list, download, upload and delete files.',
+          custom: 'A custom policy is set. See the JSON for details.',
+          '?': 'Could not read the policy (permission denied?).',
+        }[level] || 'Loading…';
       },
 
       // --- Search ---
@@ -1303,13 +1484,24 @@
             prefix: this.currentPrefix,
             pattern: this.searchPattern.trim(),
           });
+          this.loadingObjects = true;
+          this.selectedObject = null;
+          this.checkedKeys = new Set();
+          // backend returns bucket-relative keys
           const results = await this.apiGet(`/api/search?${params}`);
-          // mc find returns objects with "key" field
           this.objects = results.filter(r => r.key).map(r => ({
             ...r,
             type: r.key.endsWith('/') ? 'folder' : 'file',
           }));
+          this.searchActive = true;
         } catch (e) { this.error = e.message; }
+        this.loadingObjects = false;
+      },
+
+      async clearSearch() {
+        this.searchPattern = '';
+        this.searchActive = false;
+        await this.loadObjects();
       },
 
       // --- Bulk selection ---
